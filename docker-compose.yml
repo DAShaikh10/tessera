@@ -36,6 +36,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://tessera:tessera@db:5432/tessera
       REDIS_URL: redis://redis:6379/0
+      BOOTSTRAP_API_KEY: tessera-dev-key
       API_HOST: "0.0.0.0"
       API_PORT: "8000"
       # GIT_SYNC_PATH: /app/contracts  # Optional: Set to enable git sync endpoints
