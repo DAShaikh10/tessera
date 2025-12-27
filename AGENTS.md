@@ -6,7 +6,7 @@
 
 **Design Philosophy**: Simplicity wins, use good defaults, coordination over validation.
 
-**Current Phase**: Core implementation complete. Python SDK available. Building test coverage and DX.
+**Current Phase**: Core implementation complete. Python SDK published to PyPI. Comprehensive documentation available.
 
 ---
 
@@ -138,13 +138,6 @@ tessera/
 │   │   └── schema_validator.py # Schema validation
 │   ├── config.py              # Settings from env
 │   └── main.py                # FastAPI app
-├── sdk/                       # Python SDK (tessera-sdk)
-│   ├── src/tessera_sdk/
-│   │   ├── client.py          # TesseraClient + AsyncTesseraClient
-│   │   ├── http.py            # HTTP transport
-│   │   ├── models.py          # Response models
-│   │   └── resources.py       # API resources
-│   └── tests/
 ├── tests/                     # Test suite (403+ tests)
 │   ├── conftest.py            # Fixtures
 │   ├── test_schema_diff.py    # Schema diff tests
@@ -187,8 +180,18 @@ The core logic is in `services/schema_diff.py`. It detects:
 
 ## Python SDK
 
-The `sdk/` directory contains a Python client library:
+The Python SDK is published as a separate package: [tessera-sdk on PyPI](https://pypi.org/project/tessera-sdk/)
 
+**Installation:**
+```bash
+pip install tessera-sdk
+```
+
+**Documentation:** https://ashita-ai.github.io/tessera-python
+
+**Repository:** https://github.com/ashita-ai/tessera-python
+
+**Usage:**
 ```python
 from tessera_sdk import TesseraClient
 
@@ -460,7 +463,9 @@ All under `/api/v1`:
 - `POST /proposals/{id}/force-approve` - Force approve (admin)
 
 **Sync & Integration**:
-- `POST /sync/dbt` - Sync from dbt manifest
+- `POST /sync/dbt/upload` - Sync from dbt manifest with automation options
+- `POST /sync/dbt/impact` - Check dbt model impact on existing contracts
+- `POST /sync/dbt/diff` - CI/CD dry-run preview for breaking changes
 - `POST /sync/openapi` - Sync from OpenAPI spec
 - `POST /sync/graphql` - Sync from GraphQL introspection
 
@@ -477,3 +482,44 @@ API key-based auth with three scopes: `read`, `write`, `admin`.
 Development: Set `AUTH_DISABLED=true` to skip auth.
 
 Bootstrap: Set `BOOTSTRAP_API_KEY` env var for initial setup.
+
+---
+
+## Documentation
+
+**Server Documentation:** https://ashita-ai.github.io/tessera
+
+Key documentation pages:
+- [dbt Integration](https://ashita-ai.github.io/tessera/guides/dbt-integration/) - Comprehensive guide for dbt integration including `meta.tessera` tags
+- [Python SDK](https://ashita-ai.github.io/tessera/guides/python-sdk/) - SDK usage guide
+
+---
+
+## dbt Integration
+
+The dbt sync supports rich metadata via `meta.tessera` in your YAML files:
+
+```yaml
+models:
+  - name: dim_customers
+    meta:
+      tessera:
+        owner_team: data-platform        # Override default team
+        owner_user: alice@company.com    # Individual steward
+        consumers:                        # Explicit consumer declarations
+          - team: analytics
+            purpose: Dashboard metrics
+        freshness:                        # SLA guarantees
+          max_staleness_minutes: 60
+        volume:
+          min_rows: 10000
+        compatibility_mode: backward      # Contract compatibility
+```
+
+Sync options:
+- `auto_publish_contracts: true` - Auto-publish contracts for assets
+- `auto_create_proposals: true` - Create proposals for breaking changes
+- `auto_register_consumers: true` - Register from `meta.tessera.consumers`
+- `infer_consumers_from_refs: true` - Infer consumers from dbt `ref()` calls
+
+See [dbt Integration docs](https://ashita-ai.github.io/tessera/guides/dbt-integration/) for full details.
