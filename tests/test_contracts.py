@@ -290,6 +290,138 @@ class TestContractsEndpoint:
         assert data["results"][0]["consumer_team_id"] == consumer_id
 
 
+class TestContractFiltering:
+    """Tests for filtering on /api/v1/contracts."""
+
+    async def test_filter_by_asset_id(self, client: AsyncClient):
+        """Filter contracts by asset ID."""
+        # Setup teams
+        t1_resp = await client.post("/api/v1/teams", json={"name": "cfilter-t1"})
+        t1_id = t1_resp.json()["id"]
+
+        # Setup assets
+        a1_resp = await client.post(
+            "/api/v1/assets", json={"fqn": "cfilter.asset1", "owner_team_id": t1_id}
+        )
+        a1_id = a1_resp.json()["id"]
+        a2_resp = await client.post(
+            "/api/v1/assets", json={"fqn": "cfilter.asset2", "owner_team_id": t1_id}
+        )
+        a2_id = a2_resp.json()["id"]
+
+        # Create contracts
+        await client.post(
+            f"/api/v1/assets/{a1_id}/contracts?published_by={t1_id}",
+            json={
+                "version": "1.0.0",
+                "schema": {"type": "object", "properties": {"id": {"type": "integer"}}},
+                "compatibility_mode": "backward",
+            },
+        )
+        await client.post(
+            f"/api/v1/assets/{a2_id}/contracts?published_by={t1_id}",
+            json={
+                "version": "1.0.0",
+                "schema": {"type": "object", "properties": {"id": {"type": "integer"}}},
+                "compatibility_mode": "backward",
+            },
+        )
+
+        # Filter by asset 1
+        resp = await client.get(f"/api/v1/contracts?asset_id={a1_id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["results"][0]["asset_id"] == a1_id
+
+    async def test_filter_by_status(self, client: AsyncClient):
+        """Filter contracts by status."""
+        t1_resp = await client.post("/api/v1/teams", json={"name": "cfilter-status"})
+        t1_id = t1_resp.json()["id"]
+        a1_resp = await client.post(
+            "/api/v1/assets", json={"fqn": "cfilter.status", "owner_team_id": t1_id}
+        )
+        a1_id = a1_resp.json()["id"]
+
+        # Create active contract (v1)
+        resp1 = await client.post(
+            f"/api/v1/assets/{a1_id}/contracts?published_by={t1_id}",
+            json={
+                "version": "1.0.0",
+                "schema": {"type": "object", "properties": {"id": {"type": "integer"}}},
+                "compatibility_mode": "backward",
+            },
+        )
+        assert resp1.status_code == 201
+        
+        # Create new version (v2), making v1 deprecated (assuming standard behavior)
+
+        await client.post(
+            f"/api/v1/assets/{a1_id}/contracts?published_by={t1_id}",
+            json={
+                "version": "2.0.0", # Major change
+                "schema": {"type": "object", "properties": {"id": {"type": "integer"}}},
+                "compatibility_mode": "backward",
+            },
+        )
+
+        # Create second contract (deprecates first)
+        await client.post(
+            f"/api/v1/assets/{a1_id}/contracts?published_by={t1_id}",
+            json={
+                "version": "1.1.0",
+                "schema": {"type": "object", "properties": {"id": {"type": "integer"}}},
+                "compatibility_mode": "backward",
+            },
+        )
+        
+        # Filter active
+        
+        resp = await client.get("/api/v1/contracts?status=active")
+
+        
+        assert resp.status_code == 200
+        active_versions = [c["version"] for c in resp.json()["results"] if c["asset_id"] == a1_id]
+        assert "1.1.0" in active_versions
+        assert "1.0.0" not in active_versions # Assuming 1.0.0 became deprecated
+
+    async def test_filter_by_status_deprecated(self, client: AsyncClient):
+        """Filter contracts by deprecated status."""
+        t1_resp = await client.post("/api/v1/teams", json={"name": "cfilter-dep"})
+        t1_id = t1_resp.json()["id"]
+        a1_resp = await client.post(
+            "/api/v1/assets", json={"fqn": "cfilter.dep", "owner_team_id": t1_id}
+        )
+        a1_id = a1_resp.json()["id"]
+
+        # v1.0.0
+        await client.post(
+            f"/api/v1/assets/{a1_id}/contracts?published_by={t1_id}",
+            json={
+                "version": "1.0.0",
+                "schema": {"type": "object", "properties": {"id": {"type": "integer"}}},
+                "compatibility_mode": "backward",
+            },
+        )
+        # v1.1.0 (deprecates v1.0.0)
+        await client.post(
+            f"/api/v1/assets/{a1_id}/contracts?published_by={t1_id}",
+            json={
+                "version": "1.1.0",
+                "schema": {"type": "object", "properties": {"id": {"type": "integer"}}},
+                "compatibility_mode": "backward",
+            },
+        )
+
+        # Filter deprecated
+        resp = await client.get("/api/v1/contracts?status=deprecated")
+        assert resp.status_code == 200
+        dep_versions = [c["version"] for c in resp.json()["results"] if c["asset_id"] == a1_id]
+        
+        # 1.0.0 should be deprecated
+        assert "1.0.0" in dep_versions
+        assert "1.1.0" not in dep_versions
+
 class TestGuaranteesUpdate:
     """Tests for PATCH /api/v1/contracts/{id}/guarantees endpoint."""
 
