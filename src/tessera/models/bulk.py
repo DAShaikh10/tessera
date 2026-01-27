@@ -1,15 +1,12 @@
 """Bulk operation models."""
 
-import re
 from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
+from tessera.models.asset import FQN_PATTERN
 from tessera.models.enums import AcknowledgmentResponseType, GuaranteeMode, ResourceType
-
-# FQN pattern: alphanumeric/underscores separated by dots, at least 2 segments
-FQN_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)+$")
 
 
 class BulkItemResult(BaseModel):
