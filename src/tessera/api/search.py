@@ -91,7 +91,7 @@ class SearchEntityType(str, Enum):
 @router.get("", response_model=SearchResponse)
 async def search(
     auth: Auth,
-    q: str = Query(..., min_length=1, description="Search query"),
+    q: str = Query(..., min_length=1, max_length=100, description="Search query"),
     limit: int = Query(10, ge=1, le=50, description="Max results per entity type"),
     types: list[SearchEntityType] | None = Query(None, description="Limit results to entity types"),
     _: None = RequireRead,
