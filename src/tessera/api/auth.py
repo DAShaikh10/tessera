@@ -122,7 +122,6 @@ class AuthContext:
             return True
         return scope in self.scopes
 
-
     def require_scope(self, scope: APIKeyScope) -> None:
         """Raise ForbiddenError if the key doesn't have the required scope."""
         if not self.has_scope(scope):
