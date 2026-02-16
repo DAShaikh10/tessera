@@ -43,12 +43,14 @@ from tessera.models.enums import (
 )
 from tessera.models.webhook import WebhookEventType
 from tessera.services import (
+    audit,
     log_contract_published,
     log_proposal_acknowledged,
     log_proposal_approved,
     log_proposal_force_approved,
     log_proposal_rejected,
 )
+from tessera.services.audit import AuditAction
 from tessera.services.schema_validator import SchemaValidationError, validate_schema_or_raise
 from tessera.services.slack import notify_proposal_acknowledged, notify_proposal_approved
 from tessera.services.webhooks import (
@@ -746,6 +748,16 @@ async def withdraw_proposal(
     await session.flush()
     await session.refresh(proposal)
 
+    # Audit log proposal withdrawal
+    await audit.log_event(
+        session=session,
+        entity_type="proposal",
+        entity_id=proposal_id,
+        action=AuditAction.PROPOSAL_WITHDRAWN,
+        actor_id=auth.team_id,
+        payload={"asset_id": str(asset.id), "asset_fqn": asset.fqn},
+    )
+
     # Send webhook for withdrawal
     await send_proposal_status_change(
         event_type=WebhookEventType.PROPOSAL_WITHDRAWN,
@@ -850,6 +862,20 @@ async def file_objection(
 
     await session.flush()
     await session.refresh(proposal)
+
+    # Audit log objection filing
+    await audit.log_event(
+        session=session,
+        entity_type="proposal",
+        entity_id=proposal_id,
+        action=AuditAction.PROPOSAL_OBJECTION_FILED,
+        actor_id=objector_team_id,
+        payload={
+            "reason": objection.reason,
+            "asset_id": str(asset.id),
+            "asset_fqn": asset.fqn,
+        },
+    )
 
     return {
         "action": "objection_filed",

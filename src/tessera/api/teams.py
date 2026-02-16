@@ -273,6 +273,16 @@ async def restore_team(
     await session.flush()
     await session.refresh(team)
 
+    # Audit log team restoration
+    await audit.log_event(
+        session=session,
+        entity_type="team",
+        entity_id=team_id,
+        action=AuditAction.TEAM_RESTORED,
+        actor_id=auth.team_id,
+        payload={"name": team.name},
+    )
+
     # Invalidate cache
     await team_cache.delete(str(team_id))
 
@@ -391,6 +401,21 @@ async def reassign_team_assets(
         asset.owner_team_id = reassign.target_team_id
 
     await session.flush()
+
+    # Audit log bulk reassignment
+    await audit.log_event(
+        session=session,
+        entity_type="team",
+        entity_id=team_id,
+        action=AuditAction.BULK_ASSETS_REASSIGNED,
+        actor_id=auth.team_id,
+        payload={
+            "source_team_id": str(team_id),
+            "target_team_id": str(reassign.target_team_id),
+            "asset_count": len(assets),
+            "asset_ids": [str(a.id) for a in assets],
+        },
+    )
 
     return ReassignAssetsResponse(
         reassigned=len(assets),

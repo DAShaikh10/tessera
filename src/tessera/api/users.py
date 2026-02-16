@@ -328,4 +328,15 @@ async def reactivate_user(
     user.deactivated_at = None
     await session.flush()
     await session.refresh(user)
+
+    # Audit log user reactivation
+    await audit.log_event(
+        session=session,
+        entity_type="user",
+        entity_id=user_id,
+        action=AuditAction.USER_REACTIVATED,
+        actor_id=auth.team_id,
+        payload={"email": user.email, "name": user.name},
+    )
+
     return user
