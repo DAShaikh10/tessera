@@ -1,5 +1,6 @@
 """Tests for webhook circuit breaker pattern."""
 
+import time
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
@@ -88,6 +89,38 @@ class TestCircuitBreakerUnit:
         # With 0 cooldown, the circuit should immediately be half-open
         assert cb.is_open() is False  # Cooldown expired → half-open → allow probe
 
+    def test_reopens_after_probe_failure(self):
+        """Circuit re-opens if a probe request (half-open) fails."""
+        cb = _CircuitBreaker(threshold=3, cooldown=0.0)  # Instant cooldown
+        # Open the circuit
+        for _ in range(3):
+            cb.record_failure()
+        assert cb.is_open() is False  # Cooldown = 0, so immediately half-open
+
+        # Probe fails — circuit should re-open
+        cb.record_failure()
+        # After re-opening, is_open should reflect the new opened_at timestamp.
+        # With cooldown=0, it immediately goes half-open again.
+        # But the key point is that _opened_at was re-set (not left stale).
+        assert cb._opened_at is not None
+        assert cb._consecutive_failures == 4
+
+    def test_reopens_blocks_during_cooldown(self):
+        """After probe failure re-opens circuit, requests are blocked during cooldown."""
+        cb = _CircuitBreaker(threshold=3, cooldown=9999)  # Very long cooldown
+        # Open the circuit
+        for _ in range(3):
+            cb.record_failure()
+        assert cb.is_open() is True  # Still in cooldown
+
+        # Manually expire the cooldown to simulate half-open
+        cb._opened_at = time.monotonic() - 99999  # Long ago
+        assert cb.is_open() is False  # Half-open: probe allowed
+
+        # Probe fails — circuit re-opens with fresh timestamp
+        cb.record_failure()
+        assert cb.is_open() is True  # Re-opened, back in cooldown
+
 
 class TestDeadLetterQueue:
     """Unit tests for the dead letter queue in the circuit breaker."""
@@ -160,10 +193,10 @@ class TestCircuitBreakerIntegration:
                 mock_settings.webhook_url = "https://example.com/webhook"
 
                 # Force the circuit open
-                _circuit_breaker._consecutive_failures = CIRCUIT_BREAKER_THRESHOLD
-                import asyncio
+                import time
 
-                _circuit_breaker._opened_at = asyncio.get_event_loop().time()
+                _circuit_breaker._consecutive_failures = CIRCUIT_BREAKER_THRESHOLD
+                _circuit_breaker._opened_at = time.monotonic()
 
                 delivery_id = uuid4()
                 event = _make_event()

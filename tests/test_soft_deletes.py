@@ -7,11 +7,12 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from tessera.db.models import AssetDB, Base, TeamDB
+from tessera.db.models import AssetDB, Base, ContractDB, RegistrationDB, TeamDB
 from tessera.main import app
 from tessera.models.api_key import APIKeyCreate
-from tessera.models.enums import APIKeyScope
+from tessera.models.enums import APIKeyScope, ContractStatus, RegistrationStatus
 from tessera.services.auth import create_api_key
+from tessera.services.batch import fetch_team_names
 
 TEST_DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 _USE_SQLITE = TEST_DATABASE_URL.startswith("sqlite")
@@ -196,3 +197,91 @@ async def test_restore_team(session: AsyncSession, client: AsyncClient):
         f"/api/v1/teams/{team_id}", headers={"Authorization": f"Bearer {admin_key}"}
     )
     assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_fetch_team_names_excludes_deleted(session: AsyncSession):
+    """fetch_team_names should not return soft-deleted teams."""
+    team_active = TeamDB(name="active-team")
+    team_deleted = TeamDB(name="deleted-team", deleted_at=datetime.now(UTC))
+    session.add_all([team_active, team_deleted])
+    await session.flush()
+
+    names = await fetch_team_names(session, [team_active.id, team_deleted.id])
+    assert team_active.id in names
+    assert team_deleted.id not in names
+    assert names[team_active.id] == "active-team"
+
+
+@pytest.mark.asyncio
+async def test_lineage_excludes_deleted_asset(session: AsyncSession, client: AsyncClient):
+    """Lineage endpoint should return 404 for soft-deleted assets."""
+    team, key = await create_team_and_key(
+        session, "lineage-team", [APIKeyScope.READ, APIKeyScope.WRITE]
+    )
+    asset = AssetDB(
+        fqn="lineage.deleted",
+        owner_team_id=team.id,
+        environment="production",
+        deleted_at=datetime.now(UTC),
+    )
+    session.add(asset)
+    await session.flush()
+
+    response = await client.get(
+        f"/api/v1/assets/{asset.id}/lineage",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_lineage_excludes_deleted_registrations(session: AsyncSession, client: AsyncClient):
+    """Lineage downstream should not include soft-deleted registrations."""
+    team, key = await create_team_and_key(
+        session, "lineage-reg-team", [APIKeyScope.READ, APIKeyScope.WRITE]
+    )
+    consumer_team = TeamDB(name="consumer-team")
+    session.add(consumer_team)
+    await session.flush()
+
+    asset = AssetDB(fqn="lineage.reg.test", owner_team_id=team.id, environment="production")
+    session.add(asset)
+    await session.flush()
+
+    contract = ContractDB(
+        asset_id=asset.id,
+        version="1.0.0",
+        schema_def={"type": "object"},
+        compatibility_mode="backward",
+        status=ContractStatus.ACTIVE,
+        published_by=team.id,
+    )
+    session.add(contract)
+    await session.flush()
+
+    # Create one active and one deleted registration
+    reg_active = RegistrationDB(
+        contract_id=contract.id,
+        consumer_team_id=consumer_team.id,
+        status=RegistrationStatus.ACTIVE,
+    )
+    reg_deleted = RegistrationDB(
+        contract_id=contract.id,
+        consumer_team_id=team.id,
+        status=RegistrationStatus.ACTIVE,
+        deleted_at=datetime.now(UTC),
+    )
+    session.add_all([reg_active, reg_deleted])
+    await session.flush()
+
+    response = await client.get(
+        f"/api/v1/assets/{asset.id}/lineage",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    # Only the active registration should appear in downstream
+    downstream_team_ids = [d["team_id"] for d in data.get("downstream", [])]
+    assert str(consumer_team.id) in downstream_team_ids
+    assert str(team.id) not in downstream_team_ids

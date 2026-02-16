@@ -129,6 +129,7 @@ async def get_impacted_consumers_batch(
         select(RegistrationDB, TeamDB)
         .join(TeamDB, RegistrationDB.consumer_team_id == TeamDB.id)
         .where(RegistrationDB.contract_id.in_(contract_ids))
+        .where(RegistrationDB.deleted_at.is_(None))
         .where(RegistrationDB.status == RegistrationStatus.ACTIVE)
         .where(TeamDB.deleted_at.is_(None))
     )

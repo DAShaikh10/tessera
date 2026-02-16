@@ -1,6 +1,7 @@
 """Authentication dependencies for API endpoints."""
 
 import logging
+import secrets
 from collections.abc import Awaitable, Callable
 from typing import Annotated
 from uuid import UUID, uuid4
@@ -227,7 +228,7 @@ async def get_auth_context(
     api_key = authorization[7:]  # Remove "Bearer " prefix
 
     # Check bootstrap key
-    if settings.bootstrap_api_key and api_key == settings.bootstrap_api_key:
+    if settings.bootstrap_api_key and secrets.compare_digest(api_key, settings.bootstrap_api_key):
         # Bootstrap key has full admin access
         from sqlalchemy import select
 
