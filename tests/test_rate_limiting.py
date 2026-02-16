@@ -102,6 +102,24 @@ class TestRateLimiting:
         assert "Retry-After" in response.headers
         assert "Too Many Requests" in response.text or "RATE_LIMIT_EXCEEDED" in response.text
 
+    async def test_retry_after_reflects_rate_limit_window(
+        self, session: AsyncSession, client: AsyncClient
+    ):
+        """Retry-After header should reflect the configured rate limit window."""
+        team, key = await create_team_and_key(session, "retry-after-team", [APIKeyScope.READ])
+        headers = {"Authorization": f"Bearer {key}"}
+
+        # Exhaust the limit (2/minute)
+        await client.get("/api/v1/assets", headers=headers)
+        await client.get("/api/v1/assets", headers=headers)
+
+        # Third request triggers 429
+        response = await client.get("/api/v1/assets", headers=headers)
+        assert response.status_code == 429
+        retry_after = int(response.headers["Retry-After"])
+        # The configured limit is "2/minute" → 60-second window
+        assert 1 <= retry_after <= 60
+
     async def test_rate_limit_disabled(self, session: AsyncSession):
         """Test that rate limiting can be disabled."""
         from tessera.config import settings

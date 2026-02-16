@@ -51,6 +51,7 @@ from tessera.api.rate_limit import limiter, rate_limit_exceeded_handler
 from tessera.config import DEFAULT_SESSION_SECRET, settings
 from tessera.db import get_session, init_db
 from tessera.db.database import dispose_engine
+from tessera.logging import configure_logging
 from tessera.services.metrics import MetricsMiddleware, get_metrics, update_gauge_metrics
 from tessera.web import router as web_router
 from tessera.web.routes import register_login_required_handler
@@ -122,6 +123,8 @@ async def bootstrap_admin_user() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan handler."""
+    configure_logging(level=settings.log_level, fmt=settings.log_format)
+
     # Security warnings
     if (
         settings.environment == "production"
