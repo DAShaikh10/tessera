@@ -71,5 +71,9 @@ async def fetch_team_names(
     """
     if not team_ids:
         return {}
-    result = await session.execute(select(TeamDB.id, TeamDB.name).where(TeamDB.id.in_(team_ids)))
+    result = await session.execute(
+        select(TeamDB.id, TeamDB.name)
+        .where(TeamDB.id.in_(team_ids))
+        .where(TeamDB.deleted_at.is_(None))
+    )
     return {tid: name for tid, name in result.all()}

@@ -197,6 +197,7 @@ async def get_lineage(
         select(AssetDB, TeamDB)
         .join(TeamDB, AssetDB.owner_team_id == TeamDB.id)
         .where(AssetDB.id == asset_id)
+        .where(AssetDB.deleted_at.is_(None))
     )
     row = result.first()
     if not row:
@@ -260,6 +261,7 @@ async def get_lineage(
             select(RegistrationDB, TeamDB)
             .join(TeamDB, RegistrationDB.consumer_team_id == TeamDB.id)
             .where(RegistrationDB.contract_id.in_(contract_ids))
+            .where(RegistrationDB.deleted_at.is_(None))
         )
         rows = regs_result.all()
 

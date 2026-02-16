@@ -74,9 +74,11 @@ async def bulk_create_registrations(
                     code=ErrorCode.FORBIDDEN,
                 )
 
-            # Verify team exists
+            # Verify team exists and is not soft-deleted
             team_result = await session.execute(
-                select(TeamDB).where(TeamDB.id == item.consumer_team_id)
+                select(TeamDB)
+                .where(TeamDB.id == item.consumer_team_id)
+                .where(TeamDB.deleted_at.is_(None))
             )
             if not team_result.scalar_one_or_none():
                 raise BadRequestError(
@@ -100,11 +102,12 @@ async def bulk_create_registrations(
                     code=ErrorCode.CONTRACT_NOT_ACTIVE,
                 )
 
-            # Check for existing registration
+            # Check for existing active registration (exclude soft-deleted)
             existing_result = await session.execute(
                 select(RegistrationDB)
                 .where(RegistrationDB.contract_id == item.contract_id)
                 .where(RegistrationDB.consumer_team_id == item.consumer_team_id)
+                .where(RegistrationDB.deleted_at.is_(None))
             )
             existing = existing_result.scalar_one_or_none()
             if existing:
@@ -126,29 +129,30 @@ async def bulk_create_registrations(
                         code=ErrorCode.DUPLICATE_REGISTRATION,
                     )
 
-            # Create registration
-            registration = RegistrationDB(
-                contract_id=item.contract_id,
-                consumer_team_id=item.consumer_team_id,
-                pinned_version=item.pinned_version,
-                status=RegistrationStatus.ACTIVE,
-            )
-            session.add(registration)
-            await session.flush()
-            await session.refresh(registration)
+            # Use savepoint so a failure here doesn't affect other items
+            async with session.begin_nested():
+                registration = RegistrationDB(
+                    contract_id=item.contract_id,
+                    consumer_team_id=item.consumer_team_id,
+                    pinned_version=item.pinned_version,
+                    status=RegistrationStatus.ACTIVE,
+                )
+                session.add(registration)
+                await session.flush()
+                await session.refresh(registration)
 
-            # Log audit event
-            await log_event(
-                session=session,
-                entity_type="registration",
-                entity_id=registration.id,
-                action=AuditAction.REGISTRATION_CREATED,
-                actor_id=item.consumer_team_id,
-                payload={
-                    "contract_id": str(item.contract_id),
-                    "bulk_operation": True,
-                },
-            )
+                # Log audit event inside the savepoint
+                await log_event(
+                    session=session,
+                    entity_type="registration",
+                    entity_id=registration.id,
+                    action=AuditAction.REGISTRATION_CREATED,
+                    actor_id=item.consumer_team_id,
+                    payload={
+                        "contract_id": str(item.contract_id),
+                        "bulk_operation": True,
+                    },
+                )
 
             results.append(
                 BulkItemResult(
@@ -214,9 +218,11 @@ async def bulk_create_assets(
                     code=ErrorCode.FORBIDDEN,
                 )
 
-            # Verify team exists
+            # Verify team exists and is not soft-deleted
             team_result = await session.execute(
-                select(TeamDB).where(TeamDB.id == item.owner_team_id)
+                select(TeamDB)
+                .where(TeamDB.id == item.owner_team_id)
+                .where(TeamDB.deleted_at.is_(None))
             )
             if not team_result.scalar_one_or_none():
                 raise BadRequestError(
@@ -224,11 +230,12 @@ async def bulk_create_assets(
                     code=ErrorCode.TEAM_NOT_FOUND,
                 )
 
-            # Check for existing asset with same FQN
+            # Check for existing active asset with same FQN (exclude soft-deleted)
             existing_result = await session.execute(
                 select(AssetDB)
                 .where(AssetDB.fqn == item.fqn)
                 .where(AssetDB.environment == item.environment)
+                .where(AssetDB.deleted_at.is_(None))
             )
             existing = existing_result.scalar_one_or_none()
             if existing:
@@ -250,33 +257,34 @@ async def bulk_create_assets(
                         code=ErrorCode.DUPLICATE_ASSET,
                     )
 
-            # Create asset
-            asset = AssetDB(
-                fqn=item.fqn,
-                owner_team_id=item.owner_team_id,
-                owner_user_id=item.owner_user_id,
-                environment=item.environment,
-                resource_type=item.resource_type,
-                guarantee_mode=item.guarantee_mode,
-                metadata_=item.metadata,
-            )
-            session.add(asset)
-            await session.flush()
-            await session.refresh(asset)
+            # Use savepoint so a failure here doesn't affect other items
+            async with session.begin_nested():
+                asset = AssetDB(
+                    fqn=item.fqn,
+                    owner_team_id=item.owner_team_id,
+                    owner_user_id=item.owner_user_id,
+                    environment=item.environment,
+                    resource_type=item.resource_type,
+                    guarantee_mode=item.guarantee_mode,
+                    metadata_=item.metadata,
+                )
+                session.add(asset)
+                await session.flush()
+                await session.refresh(asset)
 
-            # Log audit event
-            await log_event(
-                session=session,
-                entity_type="asset",
-                entity_id=asset.id,
-                action=AuditAction.ASSET_CREATED,
-                actor_id=item.owner_team_id,
-                payload={
-                    "fqn": item.fqn,
-                    "environment": item.environment,
-                    "bulk_operation": True,
-                },
-            )
+                # Log audit event inside the savepoint
+                await log_event(
+                    session=session,
+                    entity_type="asset",
+                    entity_id=asset.id,
+                    action=AuditAction.ASSET_CREATED,
+                    actor_id=item.owner_team_id,
+                    payload={
+                        "fqn": item.fqn,
+                        "environment": item.environment,
+                        "bulk_operation": True,
+                    },
+                )
 
             results.append(
                 BulkItemResult(

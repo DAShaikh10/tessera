@@ -18,6 +18,7 @@ import hmac
 import ipaddress
 import logging
 import socket
+import time
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
@@ -95,16 +96,24 @@ class _CircuitBreaker:
         self._opened_at = None
 
     def record_failure(self) -> None:
-        """Record a failed delivery. Opens the circuit if threshold is reached."""
+        """Record a failed delivery. Opens or re-opens the circuit if threshold is reached."""
         self._consecutive_failures += 1
-        if self._consecutive_failures >= self._threshold and self._opened_at is None:
-            self._opened_at = asyncio.get_event_loop().time()
-            logger.warning(
-                "Webhook circuit breaker opened after %d consecutive failures. "
-                "Deliveries will fail fast for %ds.",
-                self._consecutive_failures,
-                self._cooldown,
-            )
+        if self._consecutive_failures >= self._threshold:
+            now = time.monotonic()
+            if self._opened_at is None:
+                logger.warning(
+                    "Webhook circuit breaker opened after %d consecutive failures. "
+                    "Deliveries will fail fast for %ds.",
+                    self._consecutive_failures,
+                    self._cooldown,
+                )
+            else:
+                logger.warning(
+                    "Webhook circuit breaker re-opened after probe failure. "
+                    "Deliveries will fail fast for %ds.",
+                    self._cooldown,
+                )
+            self._opened_at = now
 
     def is_open(self) -> bool:
         """Check if the circuit is open (should fail fast).
@@ -114,7 +123,7 @@ class _CircuitBreaker:
         """
         if self._opened_at is None:
             return False
-        elapsed = asyncio.get_event_loop().time() - self._opened_at
+        elapsed = time.monotonic() - self._opened_at
         if elapsed >= self._cooldown:
             # Cooldown elapsed: allow a probe request (half-open)
             return False
