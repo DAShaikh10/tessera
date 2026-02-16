@@ -1,5 +1,6 @@
 """Tests for webhook circuit breaker pattern."""
 
+import time
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
@@ -113,7 +114,7 @@ class TestCircuitBreakerUnit:
         assert cb.is_open() is True  # Still in cooldown
 
         # Manually expire the cooldown to simulate half-open
-        cb._opened_at = 0.0  # Long ago
+        cb._opened_at = time.monotonic() - 99999  # Long ago
         assert cb.is_open() is False  # Half-open: probe allowed
 
         # Probe fails — circuit re-opens with fresh timestamp
