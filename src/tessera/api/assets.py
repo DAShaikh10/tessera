@@ -673,6 +673,16 @@ async def restore_asset(
     await session.flush()
     await session.refresh(asset)
 
+    # Audit log asset restoration
+    await audit.log_event(
+        session=session,
+        entity_type="asset",
+        entity_id=asset_id,
+        action=AuditAction.ASSET_RESTORED,
+        actor_id=auth.team_id,
+        payload={"fqn": asset.fqn},
+    )
+
     # Invalidate cache
     await asset_cache.delete(str(asset_id))
 
@@ -1341,6 +1351,23 @@ async def bulk_assign_owner(
         updated += 1
 
     await session.flush()
+
+    # Audit log bulk owner assignment
+    if assets:
+        await audit.log_event(
+            session=session,
+            entity_type="asset",
+            entity_id=assets[0].id,
+            action=AuditAction.BULK_OWNER_ASSIGNED,
+            actor_id=auth.team_id,
+            payload={
+                "new_owner_user_id": str(bulk_request.owner_user_id)
+                if bulk_request.owner_user_id
+                else None,
+                "asset_count": updated,
+                "asset_ids": [str(a.id) for a in assets],
+            },
+        )
 
     # Invalidate caches for all updated assets
     for asset in assets:

@@ -53,6 +53,18 @@ class AuditAction(StrEnum):
     PROPOSAL_REJECTED = "proposal.rejected"
     PROPOSAL_EXPIRED = "proposal.expired"
 
+    # Restore actions
+    ASSET_RESTORED = "asset.restored"
+    TEAM_RESTORED = "team.restored"
+    USER_REACTIVATED = "user.reactivated"
+
+    # Proposal actions (continued)
+    PROPOSAL_OBJECTION_FILED = "proposal.objection_filed"
+
+    # Bulk actions
+    BULK_ASSETS_REASSIGNED = "bulk.assets_reassigned"
+    BULK_OWNER_ASSIGNED = "bulk.owner_assigned"
+
     # Dependency actions
     DEPENDENCY_CREATED = "dependency.created"
     DEPENDENCY_DELETED = "dependency.deleted"
@@ -261,6 +273,139 @@ async def log_guarantees_updated(
         payload={
             "old_guarantees": old_guarantees,
             "new_guarantees": new_guarantees,
+        },
+    )
+
+
+async def log_asset_restored(
+    session: AsyncSession,
+    asset_id: UUID,
+    actor_id: UUID,
+    fqn: str,
+) -> AuditEventDB:
+    """Log an asset restoration event."""
+    return await log_event(
+        session=session,
+        entity_type="asset",
+        entity_id=asset_id,
+        action=AuditAction.ASSET_RESTORED,
+        actor_id=actor_id,
+        payload={"fqn": fqn},
+    )
+
+
+async def log_team_restored(
+    session: AsyncSession,
+    team_id: UUID,
+    actor_id: UUID,
+    name: str,
+) -> AuditEventDB:
+    """Log a team restoration event."""
+    return await log_event(
+        session=session,
+        entity_type="team",
+        entity_id=team_id,
+        action=AuditAction.TEAM_RESTORED,
+        actor_id=actor_id,
+        payload={"name": name},
+    )
+
+
+async def log_user_reactivated(
+    session: AsyncSession,
+    user_id: UUID,
+    actor_id: UUID | None,
+    email: str,
+    name: str,
+) -> AuditEventDB:
+    """Log a user reactivation event."""
+    return await log_event(
+        session=session,
+        entity_type="user",
+        entity_id=user_id,
+        action=AuditAction.USER_REACTIVATED,
+        actor_id=actor_id,
+        payload={"email": email, "name": name},
+    )
+
+
+async def log_proposal_withdrawn(
+    session: AsyncSession,
+    proposal_id: UUID,
+    actor_id: UUID,
+    asset_id: UUID,
+) -> AuditEventDB:
+    """Log a proposal withdrawal event."""
+    return await log_event(
+        session=session,
+        entity_type="proposal",
+        entity_id=proposal_id,
+        action=AuditAction.PROPOSAL_WITHDRAWN,
+        actor_id=actor_id,
+        payload={"asset_id": str(asset_id)},
+    )
+
+
+async def log_objection_filed(
+    session: AsyncSession,
+    proposal_id: UUID,
+    objector_team_id: UUID,
+    reason: str,
+    asset_id: UUID,
+) -> AuditEventDB:
+    """Log an objection filed against a proposal."""
+    return await log_event(
+        session=session,
+        entity_type="proposal",
+        entity_id=proposal_id,
+        action=AuditAction.PROPOSAL_OBJECTION_FILED,
+        actor_id=objector_team_id,
+        payload={"reason": reason, "asset_id": str(asset_id)},
+    )
+
+
+async def log_bulk_assets_reassigned(
+    session: AsyncSession,
+    source_team_id: UUID,
+    target_team_id: UUID,
+    asset_count: int,
+    actor_id: UUID,
+    asset_ids: list[UUID],
+) -> AuditEventDB:
+    """Log a bulk asset reassignment between teams."""
+    return await log_event(
+        session=session,
+        entity_type="team",
+        entity_id=source_team_id,
+        action=AuditAction.BULK_ASSETS_REASSIGNED,
+        actor_id=actor_id,
+        payload={
+            "source_team_id": str(source_team_id),
+            "target_team_id": str(target_team_id),
+            "asset_count": asset_count,
+            "asset_ids": [str(aid) for aid in asset_ids],
+        },
+    )
+
+
+async def log_bulk_owner_assigned(
+    session: AsyncSession,
+    actor_id: UUID,
+    new_owner_user_id: UUID | None,
+    asset_count: int,
+    asset_ids: list[UUID],
+) -> AuditEventDB:
+    """Log a bulk user-owner assignment across assets."""
+    return await log_event(
+        session=session,
+        entity_type="asset",
+        entity_id=asset_ids[0] if asset_ids else actor_id,
+        action=AuditAction.BULK_OWNER_ASSIGNED,
+        actor_id=actor_id,
+        payload={
+            "new_owner_user_id": str(new_owner_user_id) if new_owner_user_id else None,
+            "asset_count": asset_count,
+            "asset_ids": [str(aid) for aid in asset_ids],
         },
     )
 
