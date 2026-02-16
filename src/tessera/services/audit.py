@@ -52,6 +52,7 @@ class AuditAction(StrEnum):
     PROPOSAL_APPROVED = "proposal.approved"
     PROPOSAL_REJECTED = "proposal.rejected"
     PROPOSAL_EXPIRED = "proposal.expired"
+    PROPOSAL_PUBLISHED = "proposal.published"
 
     # Restore actions
     ASSET_RESTORED = "asset.restored"
@@ -237,6 +238,27 @@ async def log_proposal_approved(
         entity_id=proposal_id,
         action=AuditAction.PROPOSAL_APPROVED,
         payload={"acknowledged_count": acknowledged_count, "auto_approved": True},
+    )
+
+
+async def log_proposal_published(
+    session: AsyncSession,
+    proposal_id: UUID,
+    contract_id: UUID,
+    publisher_id: UUID,
+    version: str,
+) -> AuditEventDB:
+    """Log that an approved proposal was published as a contract."""
+    return await log_event(
+        session=session,
+        entity_type="proposal",
+        entity_id=proposal_id,
+        action=AuditAction.PROPOSAL_PUBLISHED,
+        actor_id=publisher_id,
+        payload={
+            "contract_id": str(contract_id),
+            "version": version,
+        },
     )
 
 

@@ -73,9 +73,15 @@ async def expire_proposal(
     Returns:
         The updated proposal if expired, None if not found or not pending
     """
-    result = await session.execute(select(ProposalDB).where(ProposalDB.id == proposal_id))
+    # Lock the row to prevent two concurrent expiration runs from both
+    # expiring the same proposal and creating duplicate audit events.
+    # skip_locked=True means a concurrent worker just skips this row.
+    result = await session.execute(
+        select(ProposalDB).where(ProposalDB.id == proposal_id).with_for_update(skip_locked=True)
+    )
     proposal = result.scalar_one_or_none()
 
+    # Returns None if not found, already processed, or locked by another worker.
     if not proposal or proposal.status != ProposalStatus.PENDING:
         return None
 
@@ -113,9 +119,12 @@ async def expire_pending_proposals(session: AsyncSession) -> list[UUID]:
     if not settings.proposal_auto_expire_enabled:
         return []
 
-    # Get all pending proposals
+    # Get all pending proposals — lock rows so concurrent workers skip
+    # proposals that are already being processed.
     result = await session.execute(
-        select(ProposalDB).where(ProposalDB.status == ProposalStatus.PENDING)
+        select(ProposalDB)
+        .where(ProposalDB.status == ProposalStatus.PENDING)
+        .with_for_update(skip_locked=True)
     )
     pending_proposals = result.scalars().all()
 

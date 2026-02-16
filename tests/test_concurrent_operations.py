@@ -5,6 +5,8 @@ These tests verify that concurrent operations are handled correctly:
 2. Two contracts being published for the same asset with the same version
 3. Rapid sequential publishes don't create version gaps
 4. Acknowledgment during status changes is handled gracefully
+5. Double expiration does not create duplicate audit events
+6. Published proposal cannot be re-published
 
 Note: SQLite does not support row-level locking (SELECT FOR UPDATE is a no-op),
 so true concurrent race condition tests require PostgreSQL. These tests verify
@@ -729,11 +731,10 @@ class TestPublishFromProposal:
     async def test_double_publish_from_proposal_second_rejected(self, client: AsyncClient):
         """Publishing the same approved proposal twice — second call fails.
 
-        The unique constraint on (asset_id, version) prevents the same
-        version from being published twice.  Under true concurrency with
-        PostgreSQL, the FOR UPDATE lock on the proposal row would
-        serialize the requests.  In SQLite the constraint fires as the
-        defense-in-depth.
+        After the first publish, the proposal transitions to PUBLISHED
+        status.  The second call sees that status and returns 400 with
+        a clear "already published" message.  Under true concurrency
+        with PostgreSQL, the FOR UPDATE lock serializes the requests.
         """
         setup = await self._setup_approved_proposal(client, suffix="-dbl")
 
@@ -748,8 +749,13 @@ class TestPublishFromProposal:
         assert resp1.status_code == 200
         assert resp1.json()["action"] == "published"
 
-        # Second publish on the same proposal with the same version should
-        # fail — the unique constraint (asset_id, version) rejects it.
+        # Verify proposal is now in PUBLISHED status
+        status_resp = await client.get(f"/api/v1/proposals/{setup['proposal_id']}/status")
+        assert status_resp.status_code == 200
+        assert status_resp.json()["status"] == "published"
+
+        # Second publish on the same proposal should fail with a
+        # clear "already published" error — not a generic 409.
         resp2 = await client.post(
             f"/api/v1/proposals/{setup['proposal_id']}/publish",
             json={
@@ -757,7 +763,10 @@ class TestPublishFromProposal:
                 "published_by": setup["producer_id"],
             },
         )
-        assert resp2.status_code == 409
+        assert resp2.status_code == 400
+        data = resp2.json()
+        error_msg = data.get("detail") or data.get("error", {}).get("message", "")
+        assert "already been published" in error_msg.lower()
 
 
 class TestObjectionConcurrency:
@@ -1074,3 +1083,131 @@ class TestBulkAckEdgeCases:
         status_resp = await client.get(f"/api/v1/proposals/{setup['proposal_id']}/status")
         assert status_resp.status_code == 200
         assert status_resp.json()["status"] == "approved"
+
+
+class TestExpirationConcurrency:
+    """Tests for proposal expiration under concurrent conditions."""
+
+    async def _setup_pending_proposal(
+        self, client: AsyncClient, suffix: str = ""
+    ) -> dict[str, str]:
+        """Create a pending proposal for expiration testing.
+
+        A consumer must be registered so that a breaking change creates a
+        proposal instead of auto-publishing.
+        """
+        safe_suffix = suffix.replace("-", "_")
+
+        producer_resp = await client.post(
+            "/api/v1/teams", json={"name": f"expire-conc-prod{suffix}"}
+        )
+        assert producer_resp.status_code == 201
+        producer_id = producer_resp.json()["id"]
+
+        consumer_resp = await client.post(
+            "/api/v1/teams", json={"name": f"expire-conc-cons{suffix}"}
+        )
+        assert consumer_resp.status_code == 201
+        consumer_id = consumer_resp.json()["id"]
+
+        asset_resp = await client.post(
+            "/api/v1/assets",
+            json={"fqn": f"expire.conc{safe_suffix}.table", "owner_team_id": producer_id},
+        )
+        assert asset_resp.status_code == 201
+        asset_id = asset_resp.json()["id"]
+
+        # Publish initial contract with two required fields
+        pub_resp = await client.post(
+            f"/api/v1/assets/{asset_id}/contracts?published_by={producer_id}",
+            json={
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "integer"},
+                        "name": {"type": "string"},
+                    },
+                    "required": ["id", "name"],
+                },
+                "version": "1.0.0",
+                "compatibility_mode": "backward",
+            },
+        )
+        assert pub_resp.status_code == 201
+        contract_id = pub_resp.json()["contract"]["id"]
+
+        # Register consumer so breaking changes create proposals
+        reg_resp = await client.post(
+            f"/api/v1/registrations?contract_id={contract_id}",
+            json={"consumer_team_id": consumer_id},
+        )
+        assert reg_resp.status_code == 201
+
+        # Publish breaking change (remove required field) → creates proposal
+        breaking_resp = await client.post(
+            f"/api/v1/assets/{asset_id}/contracts?published_by={producer_id}",
+            json={
+                "schema": {
+                    "type": "object",
+                    "properties": {"id": {"type": "integer"}},
+                    "required": ["id"],
+                },
+                "version": "2.0.0",
+                "compatibility_mode": "backward",
+            },
+        )
+        assert breaking_resp.status_code == 201
+        assert breaking_resp.json()["action"] == "proposal_created"
+        proposal_id = breaking_resp.json()["proposal"]["id"]
+
+        return {
+            "producer_id": producer_id,
+            "consumer_id": consumer_id,
+            "asset_id": asset_id,
+            "proposal_id": proposal_id,
+        }
+
+    async def test_double_expire_second_fails(self, client: AsyncClient):
+        """Expiring the same proposal twice — second call fails gracefully.
+
+        After the first expiration sets status=EXPIRED, the second call
+        should return 400 (not pending) rather than creating duplicate
+        audit events.
+        """
+        setup = await self._setup_pending_proposal(client, suffix="-dblexp")
+
+        # First expire should succeed
+        resp1 = await client.post(f"/api/v1/proposals/{setup['proposal_id']}/expire")
+        assert resp1.status_code == 200
+        assert resp1.json()["status"] == "expired"
+
+        # Second expire should fail — proposal is no longer pending
+        resp2 = await client.post(f"/api/v1/proposals/{setup['proposal_id']}/expire")
+        assert resp2.status_code == 400
+
+    async def test_expire_already_published_proposal_fails(self, client: AsyncClient):
+        """Cannot expire a proposal that has already been published."""
+        setup = await self._setup_pending_proposal(client, suffix="-exppub")
+        proposal_id = setup["proposal_id"]
+
+        # Force-approve the proposal so it can be published
+        resp = await client.post(
+            f"/api/v1/proposals/{proposal_id}/force?actor_id={setup['producer_id']}"
+        )
+        assert resp.status_code == 200
+
+        # Publish from proposal
+        pub_resp = await client.post(
+            f"/api/v1/proposals/{proposal_id}/publish",
+            json={"version": "2.0.0", "published_by": setup["producer_id"]},
+        )
+        assert pub_resp.status_code == 200
+
+        # Verify proposal is published
+        status_resp = await client.get(f"/api/v1/proposals/{proposal_id}/status")
+        assert status_resp.status_code == 200
+        assert status_resp.json()["status"] == "published"
+
+        # Try to expire — should fail
+        expire_resp = await client.post(f"/api/v1/proposals/{proposal_id}/expire")
+        assert expire_resp.status_code == 400

@@ -41,6 +41,7 @@ class ProposalStatus(StrEnum):
 
     PENDING = "pending"
     APPROVED = "approved"
+    PUBLISHED = "published"
     REJECTED = "rejected"
     WITHDRAWN = "withdrawn"
     EXPIRED = "expired"
@@ -76,6 +77,7 @@ class WebhookDeliveryStatus(StrEnum):
     PENDING = "pending"  # Queued for delivery
     DELIVERED = "delivered"  # Successfully delivered (2xx response)
     FAILED = "failed"  # Failed after all retries
+    DEAD_LETTERED = "dead_lettered"  # Circuit breaker open; queued for replay
 
 
 class GuaranteeMode(StrEnum):
