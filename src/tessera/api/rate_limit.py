@@ -85,12 +85,33 @@ team_limiter = Limiter(
 )
 
 
+def _get_retry_after(exc: Exception) -> int:
+    """Extract Retry-After seconds from the rate limit that was exceeded.
+
+    Parses the rate limit window from slowapi's RateLimitExceeded exception.
+    Falls back to 60 seconds if the window cannot be determined.
+    """
+    try:
+        # slowapi sets exc.limit (a Limit wrapper) with exc.limit.limit (a RateLimitItem)
+        limit_wrapper = getattr(exc, "limit", None)
+        if limit_wrapper is not None:
+            rate_limit_item = getattr(limit_wrapper, "limit", None)
+            if rate_limit_item is not None:
+                expiry = rate_limit_item.get_expiry()
+                if expiry > 0:
+                    return int(expiry)
+    except Exception:
+        pass
+    return 60
+
+
 def rate_limit_exceeded_handler(request: Request, exc: Exception) -> Response:
     """Custom handler for rate limit exceeded errors.
 
-    Adds the 'Retry-After' header as required by the spec.
+    Adds the 'Retry-After' header derived from the rate limit window.
     """
     detail = str(getattr(exc, "detail", str(exc)))
+    retry_after = _get_retry_after(exc)
     response = JSONResponse(
         status_code=429,
         content={
@@ -101,12 +122,7 @@ def rate_limit_exceeded_handler(request: Request, exc: Exception) -> Response:
             }
         },
     )
-    # Extract retry-after if available
-    # slowapi doesn't always provide it in the exception,
-    # but we can try to estimate or just set a default if missing.
-    # For now, we'll set a reasonable default if slowapi doesn't provide it.
-    retry_after = "60"  # Default 1 minute
-    response.headers["Retry-After"] = retry_after
+    response.headers["Retry-After"] = str(retry_after)
     return response
 
 
