@@ -11,6 +11,7 @@ from tessera.services.audit import (
     log_proposal_approved,
     log_proposal_created,
     log_proposal_force_approved,
+    log_proposal_published,
     log_proposal_rejected,
 )
 from tessera.services.batch import (
@@ -94,6 +95,7 @@ __all__ = [
     "log_proposal_acknowledged",
     "log_proposal_approved",
     "log_proposal_force_approved",
+    "log_proposal_published",
     "log_proposal_rejected",
     # OpenAPI parsing
     "AssetFromOpenAPI",

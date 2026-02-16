@@ -50,6 +50,7 @@ from tessera.services import (
     log_proposal_acknowledged,
     log_proposal_approved,
     log_proposal_force_approved,
+    log_proposal_published,
     log_proposal_rejected,
 )
 from tessera.services.audit import AuditAction
@@ -995,6 +996,11 @@ async def publish_from_proposal(
     if not proposal:
         raise NotFoundError(ErrorCode.PROPOSAL_NOT_FOUND, "Proposal not found")
 
+    if proposal.status == ProposalStatus.PUBLISHED:
+        raise BadRequestError(
+            "This proposal has already been published as a contract.",
+            code=ErrorCode.PROPOSAL_NOT_PENDING,
+        )
     if proposal.status != ProposalStatus.APPROVED:
         raise BadRequestError(
             f"Cannot publish from proposal with status '{proposal.status}'. "
@@ -1070,6 +1076,19 @@ async def publish_from_proposal(
             ErrorCode.DUPLICATE_CONTRACT_VERSION,
             f"Contract version '{publish_request.version}' already exists for this asset",
         )
+
+    # Mark the proposal as published so it cannot be published again.
+    proposal.status = ProposalStatus.PUBLISHED
+    proposal.resolved_at = datetime.now(UTC)
+    await session.flush()
+
+    await log_proposal_published(
+        session=session,
+        proposal_id=proposal_id,
+        contract_id=new_contract.id,
+        publisher_id=publish_request.published_by,
+        version=new_contract.version,
+    )
 
     # Get publisher team info for webhook
     publisher_result = await session.execute(

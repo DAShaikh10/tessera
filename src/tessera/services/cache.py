@@ -295,6 +295,17 @@ async def invalidate_asset(asset_id: str) -> bool:
     invalidate search caches — those have short TTLs (default 5 minutes)
     and will expire naturally. This avoids an O(N) SCAN over all keys on
     every asset change, which was causing unnecessary cache churn.
+
+    Timing note
+    -----------
+    This function is typically called **inside** a savepoint
+    (``session.begin_nested()``) but **outside** the outer transaction
+    commit.  If the outer transaction rolls back after this call, the
+    cache will have been cleared for data that is still valid in the DB.
+    This is **self-healing**: the next read will miss the cache, fetch
+    from the DB, and repopulate.  However, under high traffic the cache
+    miss storm can briefly increase DB load.  Callers that need strict
+    consistency should call this function **after** the outer commit.
     """
     # Invalidate the specific asset entry
     asset_deleted = await asset_cache.delete(asset_id)

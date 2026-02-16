@@ -1,4 +1,16 @@
-"""Webhook delivery service."""
+"""Webhook delivery service.
+
+Limitations
+-----------
+- The circuit breaker and dead letter queue are **in-memory, per-process**.
+  In a multi-worker deployment each worker has independent state.  Events
+  queued in one worker's dead letter queue are invisible to others and are
+  **lost on process restart**.
+- Dead-lettered events are persisted to the ``webhook_deliveries`` table
+  with status ``DEAD_LETTERED`` so there is a durable record even if the
+  process crashes before replay.  However, replay itself is best-effort
+  and triggered only when the circuit closes in the same process.
+"""
 
 import asyncio
 import hashlib
@@ -342,7 +354,7 @@ async def _deliver_webhook(event: WebhookEvent, delivery_id: UUID | None = None)
         if delivery_id:
             await _update_delivery_status(
                 delivery_id,
-                status=WebhookDeliveryStatus.FAILED,
+                status=WebhookDeliveryStatus.DEAD_LETTERED,
                 attempts=0,
                 last_error=(
                     "Circuit breaker open: endpoint has been consistently failing. "
