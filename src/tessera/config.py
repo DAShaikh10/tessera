@@ -1,6 +1,6 @@
 """Application configuration."""
 
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Default session secret - MUST be overridden in production
@@ -16,21 +16,55 @@ class Settings(BaseSettings):  # type: ignore[misc]
         env_prefix="",  # No prefix, use exact names
     )
 
-    # Environment
-    environment: str = "development"
+    # ── Environment ──────────────────────────────────────────────
 
-    # Database
-    database_url: str = "postgresql+asyncpg://tessera:tessera@localhost:5432/tessera"
-    auto_create_tables: bool = True  # Set to False in production (use Alembic migrations)
+    environment: str = Field(
+        default="development",
+        description="Runtime environment. Controls security validations "
+        "and middleware behavior. Values: development, test, production.",
+    )
 
-    # CORS
-    cors_origins: list[str] = [
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:5173",
-    ]
-    cors_allow_methods: list[str] = ["GET", "POST", "PATCH", "DELETE", "OPTIONS"]
+    # ── Logging ──────────────────────────────────────────────────
+
+    log_level: str = Field(
+        default="INFO",
+        description="Root log level. Values: DEBUG, INFO, WARNING, ERROR, CRITICAL.",
+    )
+    log_format: str = Field(
+        default="text",
+        description="Log output format. 'text' for human-readable (development), "
+        "'json' for structured JSON (production, CloudWatch, Datadog).",
+    )
+
+    # ── Database ─────────────────────────────────────────────────
+
+    database_url: str = Field(
+        default="postgresql+asyncpg://tessera:tessera@localhost:5432/tessera",
+        description="SQLAlchemy async database URL. "
+        "Use postgresql+asyncpg:// for production, sqlite+aiosqlite:// for tests.",
+    )
+    auto_create_tables: bool = Field(
+        default=True,
+        description="Auto-create tables on startup. "
+        "WARNING: Must be False in production — use Alembic migrations instead.",
+    )
+
+    # ── CORS ─────────────────────────────────────────────────────
+
+    cors_origins: list[str] = Field(
+        default=[
+            "http://localhost:3000",
+            "http://localhost:5173",
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1:5173",
+        ],
+        description="Allowed CORS origins. Accepts a JSON list or comma-separated string.",
+    )
+    cors_allow_methods: list[str] = Field(
+        default=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        description="Allowed HTTP methods for CORS. "
+        "In production, restricted to this list; in dev, allows all.",
+    )
 
     @field_validator("cors_origins", mode="before")
     @classmethod
@@ -40,11 +74,26 @@ class Settings(BaseSettings):  # type: ignore[misc]
             return [origin.strip() for origin in v.split(",") if origin.strip()]
         return v
 
-    # Webhooks
-    webhook_url: str | None = None
-    webhook_secret: str | None = None
-    webhook_allowed_domains: list[str] = []  # Comma-separated allowlist (optional)
-    webhook_dns_timeout: float = 5.0  # DNS resolution timeout in seconds
+    # ── Webhooks ─────────────────────────────────────────────────
+
+    webhook_url: str | None = Field(
+        default=None,
+        description="Default webhook URL for event notifications. Per-team webhooks override this.",
+    )
+    webhook_secret: str | None = Field(
+        default=None,
+        description="HMAC secret for signing webhook payloads. "
+        "Recipients verify signatures to authenticate events.",
+    )
+    webhook_allowed_domains: list[str] = Field(
+        default=[],
+        description="Allowlist of domains for webhook URLs. "
+        "Empty list allows all domains. Comma-separated string or JSON list.",
+    )
+    webhook_dns_timeout: float = Field(
+        default=5.0,
+        description="DNS resolution timeout in seconds for webhook URL validation.",
+    )
 
     @field_validator("webhook_allowed_domains", mode="before")
     @classmethod
@@ -54,68 +103,207 @@ class Settings(BaseSettings):  # type: ignore[misc]
             return [domain.strip() for domain in v.split(",") if domain.strip()]
         return v
 
-    # Slack notifications
-    slack_webhook_url: str | None = None
+    # ── Slack ────────────────────────────────────────────────────
 
-    # Authentication
-    auth_disabled: bool = False  # Set to True to disable auth (development only)
-    bootstrap_api_key: str | None = None  # Initial admin API key for bootstrapping
-    session_secret_key: str = DEFAULT_SESSION_SECRET  # Session signing key
+    slack_webhook_url: str | None = Field(
+        default=None,
+        description="Slack incoming webhook URL for notifications.",
+    )
 
-    # Admin bootstrap (for initial setup and k8s deployments)
-    admin_email: str | None = None  # Bootstrap admin email
-    admin_password: str | None = None  # Bootstrap admin password
-    admin_name: str = "Admin"  # Bootstrap admin display name
+    # ── Authentication ───────────────────────────────────────────
 
-    # Demo mode (shows demo credentials on login page)
-    demo_mode: bool = False
+    auth_disabled: bool = Field(
+        default=False,
+        description="Disable authentication. WARNING: Development only — "
+        "all requests receive mock admin credentials.",
+    )
+    bootstrap_api_key: str | None = Field(
+        default=None,
+        description="Initial admin API key for bootstrapping. "
+        "Used to create the first team and API keys.",
+    )
+    session_secret_key: str = Field(
+        default=DEFAULT_SESSION_SECRET,
+        description="Secret key for signing session cookies. "
+        "WARNING: Must be changed from default in production.",
+    )
 
-    # Redis cache (optional)
-    redis_url: str | None = None  # e.g., redis://localhost:6379/0
-    redis_connect_timeout: float = 0.05  # Connect timeout in seconds
-    redis_socket_timeout: float = 0.05  # Operation timeout in seconds
-    cache_ttl: int = 300  # Default cache TTL in seconds (5 minutes)
-    cache_ttl_contract: int = 600  # 10 minutes
-    cache_ttl_asset: int = 300  # 5 minutes
-    cache_ttl_team: int = 300  # 5 minutes
-    cache_ttl_schema: int = 3600  # 1 hour
+    # ── Admin Bootstrap ──────────────────────────────────────────
 
-    # Rate Limiting
-    rate_limit_read: str = "1000/minute"
-    rate_limit_write: str = "100/minute"
-    rate_limit_admin: str = "50/minute"
-    rate_limit_auth: str = "30/minute"  # Authentication attempts (stricter to prevent brute force)
-    rate_limit_global: str = "5000/minute"
-    rate_limit_enabled: bool = True
+    admin_email: str | None = Field(
+        default=None,
+        description="Bootstrap admin user email. Creates or updates an admin "
+        "user on startup (idempotent, safe for k8s restarts).",
+    )
+    admin_password: str | None = Field(
+        default=None,
+        description="Bootstrap admin user password. "
+        "WARNING: Use a strong password; rotated via env var.",
+    )
+    admin_name: str = Field(
+        default="Admin",
+        description="Display name for the bootstrap admin user.",
+    )
 
-    # Per-team rate limits (for expensive operations)
-    rate_limit_expensive: str = "20/minute"  # Schema diff, lineage analysis
-    rate_limit_bulk: str = "10/minute"  # Bulk operations
+    # ── Demo Mode ────────────────────────────────────────────────
 
-    # Resource Constraints
-    max_schema_size_bytes: int = 1_000_000  # 1MB
-    max_schema_properties: int = 1000
-    max_fqn_length: int = 1000
-    max_team_name_length: int = 255
-    default_environment: str = "production"
+    demo_mode: bool = Field(
+        default=False,
+        description="Show demo credentials on the login page.",
+    )
 
-    # Analysis Defaults
-    impact_depth_default: int = 5
-    impact_depth_max: int = 10
+    # ── Redis Cache ──────────────────────────────────────────────
 
-    # Proposal Expiration
-    proposal_default_expiration_days: int = 30
-    proposal_auto_expire_enabled: bool = True
+    redis_url: str | None = Field(
+        default=None,
+        description="Redis connection URL (e.g. redis://localhost:6379/0). "
+        "When unset, caching is disabled and all operations fall through.",
+    )
+    redis_connect_timeout: float = Field(
+        default=0.05,
+        description="Redis socket connect timeout in seconds. "
+        "Low values (50ms) ensure fast failure when Redis is unavailable.",
+    )
+    redis_socket_timeout: float = Field(
+        default=0.05,
+        description="Redis socket operation timeout in seconds.",
+    )
+    cache_ttl: int = Field(
+        default=300,
+        description="Default cache TTL in seconds (5 minutes).",
+    )
+    cache_ttl_contract: int = Field(
+        default=600,
+        description="Cache TTL for contracts in seconds (10 minutes).",
+    )
+    cache_ttl_asset: int = Field(
+        default=300,
+        description="Cache TTL for assets in seconds (5 minutes).",
+    )
+    cache_ttl_team: int = Field(
+        default=300,
+        description="Cache TTL for teams in seconds (5 minutes).",
+    )
+    cache_ttl_schema: int = Field(
+        default=3600,
+        description="Cache TTL for schema diffs in seconds (1 hour). "
+        "Longer because schemas change infrequently.",
+    )
 
-    # Pagination Defaults
-    pagination_limit_default: int = 50
-    pagination_limit_max: int = 100
+    # ── Rate Limiting ────────────────────────────────────────────
 
-    # Database connection pool
-    db_pool_size: int = 20  # Base pool size
-    db_max_overflow: int = 10  # Additional connections under load
-    db_pool_timeout: int = 30  # Seconds to wait for connection
-    db_pool_recycle: int = 3600  # Recycle connections after 1 hour
+    rate_limit_read: str = Field(
+        default="1000/minute",
+        description="Per-key rate limit for read (GET) endpoints.",
+    )
+    rate_limit_write: str = Field(
+        default="100/minute",
+        description="Per-key rate limit for write (POST/PUT/PATCH) endpoints.",
+    )
+    rate_limit_admin: str = Field(
+        default="50/minute",
+        description="Per-key rate limit for admin (DELETE, key management) endpoints.",
+    )
+    rate_limit_auth: str = Field(
+        default="30/minute",
+        description="Per-key rate limit for authentication attempts. "
+        "Stricter to prevent brute-force attacks.",
+    )
+    rate_limit_global: str = Field(
+        default="5000/minute",
+        description="Global rate limit across all endpoints per key.",
+    )
+    rate_limit_enabled: bool = Field(
+        default=True,
+        description="Enable rate limiting. "
+        "WARNING: Must be True in production to prevent API abuse.",
+    )
+    rate_limit_expensive: str = Field(
+        default="20/minute",
+        description="Per-team rate limit for expensive operations (schema diff, lineage analysis).",
+    )
+    rate_limit_bulk: str = Field(
+        default="10/minute",
+        description="Per-team rate limit for bulk operations.",
+    )
+
+    # ── Resource Constraints ─────────────────────────────────────
+
+    max_schema_size_bytes: int = Field(
+        default=1_000_000,
+        description="Maximum schema size in bytes (1 MB). "
+        "Prevents DoS from extremely large schema payloads.",
+    )
+    max_schema_properties: int = Field(
+        default=1000,
+        description="Maximum number of top-level properties in a schema.",
+    )
+    max_fqn_length: int = Field(
+        default=1000,
+        description="Maximum length for fully-qualified asset names.",
+    )
+    max_team_name_length: int = Field(
+        default=255,
+        description="Maximum length for team names.",
+    )
+    default_environment: str = Field(
+        default="production",
+        description="Default environment tag for assets created without one.",
+    )
+
+    # ── Analysis ─────────────────────────────────────────────────
+
+    impact_depth_default: int = Field(
+        default=5,
+        description="Default depth for impact/lineage analysis traversal.",
+    )
+    impact_depth_max: int = Field(
+        default=10,
+        description="Maximum allowed depth for impact/lineage analysis. "
+        "Caps user-provided depth to prevent expensive recursive queries.",
+    )
+
+    # ── Proposal Expiration ──────────────────────────────────────
+
+    proposal_default_expiration_days: int = Field(
+        default=30,
+        description="Days until a pending proposal expires automatically.",
+    )
+    proposal_auto_expire_enabled: bool = Field(
+        default=True,
+        description="Enable automatic expiration of stale proposals.",
+    )
+
+    # ── Pagination ───────────────────────────────────────────────
+
+    pagination_limit_default: int = Field(
+        default=50,
+        description="Default page size when limit is not specified.",
+    )
+    pagination_limit_max: int = Field(
+        default=100,
+        description="Maximum allowed page size. Requests above this are clamped.",
+    )
+
+    # ── Database Connection Pool ─────────────────────────────────
+
+    db_pool_size: int = Field(
+        default=20,
+        description="Base connection pool size.",
+    )
+    db_max_overflow: int = Field(
+        default=10,
+        description="Additional connections allowed beyond pool_size under load.",
+    )
+    db_pool_timeout: int = Field(
+        default=30,
+        description="Seconds to wait for a connection from the pool before raising.",
+    )
+    db_pool_recycle: int = Field(
+        default=3600,
+        description="Recycle (close and reopen) connections after this many seconds. "
+        "Prevents stale connections from accumulating.",
+    )
 
     @model_validator(mode="after")
     def validate_production_config(self) -> "Settings":
