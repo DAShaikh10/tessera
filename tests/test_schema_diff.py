@@ -975,6 +975,242 @@ class TestDepthProtection:
         assert any(c.kind == ChangeKind.TYPE_CHANGED for c in result.changes)
 
 
+class TestAdditionalProperties:
+    """Tests for additionalProperties keyword detection (spec 08a)."""
+
+    def test_additional_properties_true_to_false_is_backward_breaking(self):
+        """Restricting additionalProperties is a backward-breaking constraint tightening."""
+        old = {
+            "type": "object",
+            "properties": {"id": {"type": "integer"}},
+            "additionalProperties": True,
+        }
+        new = {
+            "type": "object",
+            "properties": {"id": {"type": "integer"}},
+            "additionalProperties": False,
+        }
+        result = diff_schemas(old, new)
+        assert result.has_changes
+        assert any(
+            c.kind == ChangeKind.CONSTRAINT_TIGHTENED and "additionalProperties" in c.path
+            for c in result.changes
+        )
+        breaking = result.breaking_for_mode(CompatibilityMode.BACKWARD)
+        assert any("additionalProperties" in c.path for c in breaking)
+
+    def test_additional_properties_false_to_true_is_forward_breaking(self):
+        """Allowing additionalProperties is a forward-breaking constraint relaxation."""
+        old = {
+            "type": "object",
+            "properties": {"id": {"type": "integer"}},
+            "additionalProperties": False,
+        }
+        new = {
+            "type": "object",
+            "properties": {"id": {"type": "integer"}},
+            "additionalProperties": True,
+        }
+        result = diff_schemas(old, new)
+        assert result.has_changes
+        assert any(
+            c.kind == ChangeKind.CONSTRAINT_RELAXED and "additionalProperties" in c.path
+            for c in result.changes
+        )
+        breaking = result.breaking_for_mode(CompatibilityMode.FORWARD)
+        assert any("additionalProperties" in c.path for c in breaking)
+
+    def test_additional_properties_absent_to_false_is_tightened(self):
+        """Absent additionalProperties defaults to true; adding false is a tightening."""
+        old = {"type": "object", "properties": {"id": {"type": "integer"}}}
+        new = {
+            "type": "object",
+            "properties": {"id": {"type": "integer"}},
+            "additionalProperties": False,
+        }
+        result = diff_schemas(old, new)
+        assert result.has_changes
+        assert any(
+            c.kind == ChangeKind.CONSTRAINT_TIGHTENED and "additionalProperties" in c.path
+            for c in result.changes
+        )
+
+    def test_additional_properties_false_to_absent_is_relaxed(self):
+        """Removing a false additionalProperties constraint is a relaxation."""
+        old = {
+            "type": "object",
+            "properties": {"id": {"type": "integer"}},
+            "additionalProperties": False,
+        }
+        new = {"type": "object", "properties": {"id": {"type": "integer"}}}
+        result = diff_schemas(old, new)
+        assert result.has_changes
+        assert any(
+            c.kind == ChangeKind.CONSTRAINT_RELAXED and "additionalProperties" in c.path
+            for c in result.changes
+        )
+
+    def test_additional_properties_both_false_no_change(self):
+        """Same additionalProperties value produces no change."""
+        old = {"type": "object", "additionalProperties": False}
+        new = {"type": "object", "additionalProperties": False}
+        result = diff_schemas(old, new)
+        assert not result.has_changes
+
+    def test_additional_properties_both_absent_no_change(self):
+        """Neither schema having additionalProperties produces no change."""
+        old = {"type": "object", "properties": {"id": {"type": "integer"}}}
+        new = {"type": "object", "properties": {"id": {"type": "integer"}}}
+        result = diff_schemas(old, new)
+        assert not result.has_changes
+
+    def test_additional_properties_schema_detects_nested_changes(self):
+        """When additionalProperties is a schema, changes within it are detected."""
+        old = {"type": "object", "additionalProperties": {"type": "string"}}
+        new = {"type": "object", "additionalProperties": {"type": "integer"}}
+        result = diff_schemas(old, new)
+        assert result.has_changes
+
+
+class TestTypeArrayHandling:
+    """Tests for type array normalisation and nullable expansion (spec 08b / 08f)."""
+
+    def test_type_array_order_independent_no_false_positive(self):
+        """[null, string] and [string, null] should be treated as identical."""
+        old = {"type": "object", "properties": {"field": {"type": ["string", "null"]}}}
+        new = {"type": "object", "properties": {"field": {"type": ["null", "string"]}}}
+        result = diff_schemas(old, new)
+        assert not result.has_changes
+
+    def test_type_array_identical_no_change(self):
+        """Identical type arrays (same order) produce no change."""
+        old = {"type": "object", "properties": {"field": {"type": ["string", "integer"]}}}
+        new = {"type": "object", "properties": {"field": {"type": ["string", "integer"]}}}
+        result = diff_schemas(old, new)
+        assert not result.has_changes
+
+    def test_scalar_to_nullable_array_is_nullable_added(self):
+        """string → [string, null] should emit NULLABLE_ADDED, not TYPE_CHANGED."""
+        old = {"type": "object", "properties": {"name": {"type": "string"}}}
+        new = {"type": "object", "properties": {"name": {"type": ["string", "null"]}}}
+        result = diff_schemas(old, new)
+        assert result.has_changes
+        kinds = [c.kind for c in result.changes]
+        assert ChangeKind.NULLABLE_ADDED in kinds
+        assert ChangeKind.TYPE_CHANGED not in kinds
+
+    def test_nullable_array_to_scalar_is_nullable_removed(self):
+        """[string, null] → string should emit NULLABLE_REMOVED, not TYPE_CHANGED."""
+        old = {"type": "object", "properties": {"name": {"type": ["string", "null"]}}}
+        new = {"type": "object", "properties": {"name": {"type": "string"}}}
+        result = diff_schemas(old, new)
+        assert result.has_changes
+        kinds = [c.kind for c in result.changes]
+        assert ChangeKind.NULLABLE_REMOVED in kinds
+        assert ChangeKind.TYPE_CHANGED not in kinds
+
+    def test_nullable_removed_is_backward_breaking(self):
+        """Removing nullability is backward-breaking."""
+        old = {"type": "object", "properties": {"field": {"type": ["string", "null"]}}}
+        new = {"type": "object", "properties": {"field": {"type": "string"}}}
+        result = diff_schemas(old, new)
+        breaking = result.breaking_for_mode(CompatibilityMode.BACKWARD)
+        assert any(c.kind == ChangeKind.NULLABLE_REMOVED for c in breaking)
+
+    def test_nullable_added_is_forward_breaking(self):
+        """Adding nullability is forward-breaking."""
+        old = {"type": "object", "properties": {"field": {"type": "string"}}}
+        new = {"type": "object", "properties": {"field": {"type": ["string", "null"]}}}
+        result = diff_schemas(old, new)
+        breaking = result.breaking_for_mode(CompatibilityMode.FORWARD)
+        assert any(c.kind == ChangeKind.NULLABLE_ADDED for c in breaking)
+
+    def test_type_array_real_type_change_still_detected(self):
+        """A genuine type change between arrays is still detected."""
+        old = {"type": "object", "properties": {"field": {"type": ["string", "integer"]}}}
+        new = {"type": "object", "properties": {"field": {"type": ["boolean", "integer"]}}}
+        result = diff_schemas(old, new)
+        assert result.has_changes
+        assert any(c.kind == ChangeKind.TYPE_CHANGED for c in result.changes)
+
+
+class TestUnhashableEnumValues:
+    """Tests for enum values with unhashable types (spec 08c)."""
+
+    def test_enum_with_dict_values_does_not_crash(self):
+        """Enum values containing dicts must not raise TypeError."""
+        old = {"type": "object", "properties": {"field": {"enum": [{"key": "a"}, {"key": "b"}]}}}
+        new = {"type": "object", "properties": {"field": {"enum": [{"key": "a"}, {"key": "c"}]}}}
+        result = diff_schemas(old, new)
+        assert result.has_changes
+        kinds = [c.kind for c in result.changes]
+        assert ChangeKind.ENUM_VALUES_ADDED in kinds or ChangeKind.ENUM_VALUES_REMOVED in kinds
+
+    def test_enum_with_list_values_does_not_crash(self):
+        """Enum values containing lists must not raise TypeError."""
+        old = {"type": "object", "properties": {"field": {"enum": [[1, 2], [3, 4]]}}}
+        new = {"type": "object", "properties": {"field": {"enum": [[1, 2], [5, 6]]}}}
+        result = diff_schemas(old, new)
+        assert result.has_changes
+
+    def test_enum_with_unhashable_identical_values_no_change(self):
+        """Same unhashable enum values produce no change."""
+        schema = {"type": "object", "properties": {"field": {"enum": [{"key": "a"}]}}}
+        result = diff_schemas(schema, schema)
+        assert not result.has_changes
+
+    def test_enum_with_scalar_values_unchanged(self):
+        """Normal scalar enum values continue to work correctly."""
+        old = {"type": "object", "properties": {"status": {"enum": ["active", "inactive"]}}}
+        new = {
+            "type": "object",
+            "properties": {"status": {"enum": ["active", "inactive", "pending"]}},
+        }
+        result = diff_schemas(old, new)
+        assert result.has_changes
+        assert any(c.kind == ChangeKind.ENUM_VALUES_ADDED for c in result.changes)
+
+
+class TestFreshnessDurationEquality:
+    """Tests for freshness semantic equality check (spec 08e)."""
+
+    def test_hours_and_minutes_equivalent_produces_no_change(self):
+        """{"hours": 1} and {"minutes": 60} are semantically equal — no change."""
+        old_g = {"freshness": {"warn_after": {"hours": 1}}}
+        new_g = {"freshness": {"warn_after": {"minutes": 60}}}
+        result = diff_guarantees(old_g, new_g)
+        assert not result.has_changes
+
+    def test_days_and_hours_equivalent_produces_no_change(self):
+        """{"days": 1} and {"hours": 24} are semantically equal — no change."""
+        old_g = {"freshness": {"warn_after": {"days": 1}}}
+        new_g = {"freshness": {"warn_after": {"hours": 24}}}
+        result = diff_guarantees(old_g, new_g)
+        assert not result.has_changes
+
+    def test_minutes_and_seconds_equivalent_produces_no_change(self):
+        """{"minutes": 2} and {"seconds": 120} are semantically equal — no change."""
+        old_g = {"freshness": {"warn_after": {"minutes": 2}}}
+        new_g = {"freshness": {"warn_after": {"seconds": 120}}}
+        result = diff_guarantees(old_g, new_g)
+        assert not result.has_changes
+
+    def test_genuinely_different_freshness_still_detected(self):
+        """A real freshness change is still reported."""
+        old_g = {"freshness": {"warn_after": {"hours": 1}}}
+        new_g = {"freshness": {"warn_after": {"hours": 2}}}
+        result = diff_guarantees(old_g, new_g)
+        assert result.has_changes
+        assert any(c.kind == GuaranteeChangeKind.FRESHNESS_RELAXED for c in result.changes)
+
+    def test_max_staleness_and_warn_after_equivalent_produces_no_change(self):
+        """max_staleness_minutes and warn_after equivalent durations produce no change."""
+        old_g = {"freshness": {"max_staleness_minutes": 60}}
+        new_g = {"freshness": {"warn_after": {"hours": 1}}}
+        result = diff_guarantees(old_g, new_g)
+        assert not result.has_changes
+
+
 class TestDiffContracts:
     """Test diff_contracts function for full contract comparison."""
 
