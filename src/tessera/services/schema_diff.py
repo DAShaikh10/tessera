@@ -202,6 +202,22 @@ def resolve_refs(schema: dict[str, Any], max_depth: int = 50) -> dict[str, Any]:
     return schema
 
 
+def _list_diff(old_vals: list[Any], new_vals: list[Any]) -> tuple[list[Any], list[Any]]:
+    """Return (added, removed) between two value lists.
+
+    Uses set operations when all values are hashable; falls back to O(n²)
+    linear scan when values contain dicts or nested lists (valid in JSON Schema).
+    """
+    try:
+        old_set = set(old_vals)  # type: ignore[arg-type]
+        new_set = set(new_vals)  # type: ignore[arg-type]
+        return list(new_set - old_set), list(old_set - new_set)
+    except TypeError:
+        added = [v for v in new_vals if v not in old_vals]
+        removed = [v for v in old_vals if v not in new_vals]
+        return added, removed
+
+
 class SchemaDiff:
     """Compares two JSON schemas and identifies changes."""
 
@@ -306,6 +322,9 @@ class SchemaDiff:
         # Compare nullable (for schemas that use nullable keyword)
         self._diff_nullable(old, new, path)
 
+        # Compare additionalProperties
+        self._diff_additional_properties(old, new, path, depth)
+
         # Recurse into items for arrays
         if old.get("type") == "array" and new.get("type") == "array":
             old_items = old.get("items", {})
@@ -377,48 +396,102 @@ class SchemaDiff:
             )
 
     def _diff_type(self, old: dict[str, Any], new: dict[str, Any], path: str) -> None:
-        """Compare type definitions."""
+        """Compare type definitions.
+
+        JSON Schema allows ``type`` to be a single string or a list of strings.
+        This method normalises lists for order-independent comparison and
+        recognises nullable expansions/contractions expressed via type arrays
+        (e.g. ``"string"`` → ``["string", "null"]``) rather than misfiring
+        a TYPE_CHANGED event.
+        """
         old_type = old.get("type")
         new_type = new.get("type")
 
         if old_type is None or new_type is None:
             return
-        if old_type == new_type:
-            return
 
         type_path = f"{path}.type" if path else "type"
 
-        # Check for widening/narrowing
-        if (old_type, new_type) in self.TYPE_WIDENING:
+        # Check for nullable expansion: "T" → ["T", "null"]
+        if (
+            isinstance(old_type, str)
+            and isinstance(new_type, list)
+            and sorted(new_type) == sorted([old_type, "null"])
+        ):
             self.changes.append(
                 BreakingChange(
-                    kind=ChangeKind.TYPE_WIDENED,
+                    kind=ChangeKind.NULLABLE_ADDED,
                     path=type_path,
-                    message=f"Type widened from '{old_type}' to '{new_type}'",
+                    message=(
+                        f"Field became nullable (type widened from '{old_type}' to {new_type!r})"
+                    ),
                     old_value=old_type,
                     new_value=new_type,
                 )
             )
-        elif (new_type, old_type) in self.TYPE_WIDENING:
+            return
+
+        # Check for nullable contraction: ["T", "null"] → "T"
+        if (
+            isinstance(old_type, list)
+            and isinstance(new_type, str)
+            and sorted(old_type) == sorted([new_type, "null"])
+        ):
             self.changes.append(
                 BreakingChange(
-                    kind=ChangeKind.TYPE_NARROWED,
+                    kind=ChangeKind.NULLABLE_REMOVED,
                     path=type_path,
-                    message=f"Type narrowed from '{old_type}' to '{new_type}'",
+                    message=(
+                        f"Field is no longer nullable"
+                        f" (type narrowed from {old_type!r} to '{new_type}')"
+                    ),
                     old_value=old_type,
                     new_value=new_type,
                 )
             )
-        else:
-            self.changes.append(
-                BreakingChange(
-                    kind=ChangeKind.TYPE_CHANGED,
-                    path=type_path,
-                    message=f"Type changed from '{old_type}' to '{new_type}'",
-                    old_value=old_type,
-                    new_value=new_type,
+            return
+
+        # Normalise lists for order-independent comparison before checking equality
+        old_norm: Any = sorted(old_type) if isinstance(old_type, list) else old_type
+        new_norm: Any = sorted(new_type) if isinstance(new_type, list) else new_type
+
+        if old_norm == new_norm:
+            return
+
+        # Widening / narrowing only applies to scalar string types
+        if isinstance(old_norm, str) and isinstance(new_norm, str):
+            if (old_norm, new_norm) in self.TYPE_WIDENING:
+                self.changes.append(
+                    BreakingChange(
+                        kind=ChangeKind.TYPE_WIDENED,
+                        path=type_path,
+                        message=f"Type widened from '{old_norm}' to '{new_norm}'",
+                        old_value=old_type,
+                        new_value=new_type,
+                    )
                 )
+                return
+            if (new_norm, old_norm) in self.TYPE_WIDENING:
+                self.changes.append(
+                    BreakingChange(
+                        kind=ChangeKind.TYPE_NARROWED,
+                        path=type_path,
+                        message=f"Type narrowed from '{old_norm}' to '{new_norm}'",
+                        old_value=old_type,
+                        new_value=new_type,
+                    )
+                )
+                return
+
+        self.changes.append(
+            BreakingChange(
+                kind=ChangeKind.TYPE_CHANGED,
+                path=type_path,
+                message=f"Type changed from {old_type!r} to {new_type!r}",
+                old_value=old_type,
+                new_value=new_type,
             )
+        )
 
     def _diff_constraints(self, old: dict[str, Any], new: dict[str, Any], path: str) -> None:
         """Compare constraints like minLength, maxLength, minimum, maximum, pattern."""
@@ -506,17 +579,20 @@ class SchemaDiff:
                 )
 
     def _diff_enum(self, old: dict[str, Any], new: dict[str, Any], path: str) -> None:
-        """Compare enum values."""
-        old_enum = set(old.get("enum", []))
-        new_enum = set(new.get("enum", []))
+        """Compare enum values.
 
-        if not old_enum and not new_enum:
+        Uses ``_list_diff`` to handle enum values that contain unhashable types
+        (dicts, nested lists), which are valid in JSON Schema but crash set().
+        """
+        old_enum_list: list[Any] = old.get("enum", [])
+        new_enum_list: list[Any] = new.get("enum", [])
+
+        if not old_enum_list and not new_enum_list:
             return
 
         enum_path = f"{path}.enum" if path else "enum"
 
-        added = new_enum - old_enum
-        removed = old_enum - new_enum
+        added, removed = _list_diff(old_enum_list, new_enum_list)
 
         if added:
             self.changes.append(
@@ -524,8 +600,8 @@ class SchemaDiff:
                     kind=ChangeKind.ENUM_VALUES_ADDED,
                     path=enum_path,
                     message=f"Enum values added: {added}",
-                    old_value=list(old_enum),
-                    new_value=list(new_enum),
+                    old_value=old_enum_list,
+                    new_value=new_enum_list,
                 )
             )
 
@@ -535,8 +611,8 @@ class SchemaDiff:
                     kind=ChangeKind.ENUM_VALUES_REMOVED,
                     path=enum_path,
                     message=f"Enum values removed: {removed}",
-                    old_value=list(old_enum),
-                    new_value=list(new_enum),
+                    old_value=old_enum_list,
+                    new_value=new_enum_list,
                 )
             )
 
@@ -611,6 +687,82 @@ class SchemaDiff:
                     message="Field is no longer nullable",
                     old_value=True,
                     new_value=False,
+                )
+            )
+
+    def _diff_additional_properties(
+        self,
+        old: dict[str, Any],
+        new: dict[str, Any],
+        path: str,
+        depth: int,
+    ) -> None:
+        """Compare the ``additionalProperties`` keyword.
+
+        JSON Schema defaults ``additionalProperties`` to ``true`` when absent,
+        meaning all unknown properties are permitted.  Changes to this keyword
+        affect whether consumers can send extra fields:
+
+        - ``true`` → ``false``: restricts unknown properties (backward-breaking,
+          emitted as CONSTRAINT_TIGHTENED)
+        - ``false`` → ``true``: allows unknown properties (forward-breaking,
+          emitted as CONSTRAINT_RELAXED)
+        - schema → schema: recurse into the sub-schema to detect nested changes
+        """
+        _missing: Any = object()
+        old_ap = old.get("additionalProperties", _missing)
+        new_ap = new.get("additionalProperties", _missing)
+
+        # Treat absent as the JSON Schema default (True)
+        old_val: Any = True if old_ap is _missing else old_ap
+        new_val: Any = True if new_ap is _missing else new_ap
+
+        if old_val == new_val:
+            return
+
+        ap_path = f"{path}.additionalProperties" if path else "additionalProperties"
+
+        if isinstance(old_val, bool) and isinstance(new_val, bool):
+            if not new_val:
+                # true → false: restricts unknown properties (backward-breaking)
+                self.changes.append(
+                    BreakingChange(
+                        kind=ChangeKind.CONSTRAINT_TIGHTENED,
+                        path=ap_path,
+                        message=(
+                            "additionalProperties restricted to false"
+                            " (unknown properties no longer permitted)"
+                        ),
+                        old_value=old_val,
+                        new_value=new_val,
+                    )
+                )
+            else:
+                # false → true: allows unknown properties (forward-breaking)
+                self.changes.append(
+                    BreakingChange(
+                        kind=ChangeKind.CONSTRAINT_RELAXED,
+                        path=ap_path,
+                        message=(
+                            "additionalProperties relaxed to true"
+                            " (unknown properties now permitted)"
+                        ),
+                        old_value=old_val,
+                        new_value=new_val,
+                    )
+                )
+        elif isinstance(old_val, dict) and isinstance(new_val, dict):
+            # Both are schema objects — recurse for fine-grained change detection
+            self._diff_object(old_val, new_val, ap_path, depth + 1)
+        else:
+            # Boolean ↔ schema mismatch — conservatively flag as tightening
+            self.changes.append(
+                BreakingChange(
+                    kind=ChangeKind.CONSTRAINT_TIGHTENED,
+                    path=ap_path,
+                    message=f"additionalProperties changed from {old_val!r} to {new_val!r}",
+                    old_value=None if old_ap is _missing else old_ap,
+                    new_value=None if new_ap is _missing else new_ap,
                 )
             )
 
@@ -937,21 +1089,21 @@ class GuaranteeDiff:
 
         # Modified accepted_values - compare value sets
         for col in old_cols & new_cols:
-            old_vals = set(old_av[col]) if isinstance(old_av[col], list) else set()
-            new_vals = set(new_av[col]) if isinstance(new_av[col], list) else set()
+            old_list: list[Any] = old_av[col] if isinstance(old_av[col], list) else []
+            new_list: list[Any] = new_av[col] if isinstance(new_av[col], list) else []
 
-            if old_vals != new_vals:
-                added = new_vals - old_vals
-                removed = old_vals - new_vals
+            # Use _list_diff to safely handle unhashable values (dicts, nested lists)
+            added, removed = _list_diff(old_list, new_list)
 
+            if added or removed:
                 if added and not removed:
                     # Values added = expanded (more permissive)
                     self._add_change(
                         GuaranteeChangeKind.ACCEPTED_VALUES_EXPANDED,
                         f"accepted_values.{col}",
                         f"accepted_values for '{col}' expanded: added {added}",
-                        old_value=list(old_vals),
-                        new_value=list(new_vals),
+                        old_value=old_list,
+                        new_value=new_list,
                     )
                 elif removed and not added:
                     # Values removed = contracted (more restrictive)
@@ -959,8 +1111,8 @@ class GuaranteeDiff:
                         GuaranteeChangeKind.ACCEPTED_VALUES_CONTRACTED,
                         f"accepted_values.{col}",
                         f"accepted_values for '{col}' contracted: removed {removed}",
-                        old_value=list(old_vals),
-                        new_value=list(new_vals),
+                        old_value=old_list,
+                        new_value=new_list,
                     )
                 else:
                     # Both added and removed — emit separate changes so each
@@ -969,15 +1121,15 @@ class GuaranteeDiff:
                         GuaranteeChangeKind.ACCEPTED_VALUES_CONTRACTED,
                         f"accepted_values.{col}",
                         f"accepted_values for '{col}' contracted: removed {removed}",
-                        old_value=list(old_vals),
-                        new_value=list(new_vals),
+                        old_value=old_list,
+                        new_value=new_list,
                     )
                     self._add_change(
                         GuaranteeChangeKind.ACCEPTED_VALUES_EXPANDED,
                         f"accepted_values.{col}",
                         f"accepted_values for '{col}' expanded: added {added}",
-                        old_value=list(old_vals),
-                        new_value=list(new_vals),
+                        old_value=old_list,
+                        new_value=new_list,
                     )
 
     def _diff_relationships(self) -> None:
@@ -1104,7 +1256,11 @@ class GuaranteeDiff:
             new_seconds = self._extract_freshness_duration_seconds(new_fresh)
 
             if old_seconds is not None and new_seconds is not None:
-                if new_seconds > old_seconds:
+                if old_seconds == new_seconds:
+                    # Semantically equal despite different representations
+                    # (e.g. {"hours": 1} vs {"minutes": 60}) — no change to emit.
+                    return
+                elif new_seconds > old_seconds:
                     kind = GuaranteeChangeKind.FRESHNESS_RELAXED
                 else:
                     kind = GuaranteeChangeKind.FRESHNESS_TIGHTENED
